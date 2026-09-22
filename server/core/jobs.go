@@ -31,7 +31,8 @@ var (
 		// ID -> *Job
 		active: &sync.Map{},
 	}
-	jobID = 0
+	jobIDMu sync.Mutex
+	jobID   = 0
 )
 
 // Job - Manages background jobs
@@ -107,9 +108,24 @@ func (j *jobs) Get(jobID int) *Job {
 	return nil
 }
 
-// NextJobID - Returns an incremental nonce as an id
+// NextJobID - Returns an incremental nonce as an id. Mutex-guarded: concurrent
+// listener/stager starts must never observe the same value, or their DB rows
+// collide on the listener_jobs.job_id unique index.
 func NextJobID() int {
-	newID := jobID + 1
+	jobIDMu.Lock()
+	defer jobIDMu.Unlock()
 	jobID++
-	return newID
+	return jobID
+}
+
+// SeedJobID - Raises the counter past n. The counter restarts at zero with
+// every process, while listener rows persist in SQLite; without reseeding,
+// the first creates after a restart replay IDs into UNIQUE collisions.
+// Call once at daemon startup with the max persisted job id.
+func SeedJobID(n int) {
+	jobIDMu.Lock()
+	defer jobIDMu.Unlock()
+	if n > jobID {
+		jobID = n
+	}
 }

@@ -528,6 +528,16 @@ func SaveC2Listener(listenerConf *clientpb.ListenerJob) error {
 	return nil
 }
 
+// MaxListenerJobID - highest persisted listener job id, or 0 on empty/error.
+// The in-memory job counter restarts at zero with every process while these
+// rows survive in SQLite; seed the counter from this at daemon startup so new
+// listeners cannot replay IDs into the job_id unique index.
+func MaxListenerJobID() (uint32, error) {
+	var max uint32
+	result := Session().Model(&models.ListenerJob{}).Select("COALESCE(MAX(job_id),0)").Scan(&max)
+	return max, result.Error
+}
+
 func UpdateHTTPC2Listener(listenerConf *clientpb.ListenerJob) error {
 	if listenerConf == nil {
 		return errors.New("listener config is nil")

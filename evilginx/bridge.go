@@ -42,7 +42,10 @@ import (
 	"github.com/bishopfox/sliver/server/certs"
 	"github.com/bishopfox/sliver/server/configs"
 	"github.com/bishopfox/sliver/server/console"
+	"github.com/bishopfox/sliver/server/core"
 	"github.com/bishopfox/sliver/server/cryptography"
+	"github.com/bishopfox/sliver/server/db"
+	"github.com/bishopfox/sliver/server/log"
 	servertransport "github.com/bishopfox/sliver/server/transport"
 )
 
@@ -124,6 +127,17 @@ func (s *SliverBridge) Start() error {
 	cryptography.MinisignServerPrivateKey()
 	c2.SetupDefaultC2Profiles()
 	_, _ = configs.LoadCrackConfig()
+
+	// Reseed the listener job counter past rows persisted by previous runs.
+	// The in-memory counter restarts at zero per process while listener_jobs
+	// rows survive in SQLite; without this, the first creates after a
+	// restart replay IDs into UNIQUE collisions (and still bind, so the
+	// listener "works on refresh" despite the error).
+	if maxJobID, err := db.MaxListenerJobID(); err != nil {
+		log.NamedLogger("bridge", "start").Warnf("could not reseed job counter: %v", err)
+	} else if maxJobID > 0 {
+		core.SeedJobID(int(maxJobID))
+	}
 
 	port := s.config.Port
 	grpcServer, ln, err := servertransport.StartMtlsClientListener(s.config.Host, port)
