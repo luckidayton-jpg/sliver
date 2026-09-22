@@ -38,6 +38,27 @@ func (s *SliverBridge) GenerateImplant(params ImplantParams) (*ImplantBuildResul
 	}, nil
 }
 
+// GetBuildArtifact - re-fetch a previously generated implant's bytes by
+// implant name (wraps the Regenerate RPC). Used to post-process artifacts
+// (e.g. macOS .app bundling) without rebuilding.
+func (s *SliverBridge) GetBuildArtifact(implantName string) (string, []byte, error) {
+	c, err := s.requireClient()
+	if err != nil {
+		return "", nil, err
+	}
+	if implantName == "" {
+		return "", nil, fmt.Errorf("implant name is required")
+	}
+	resp, err := c.Regenerate(context.Background(), &clientpb.RegenerateReq{ImplantName: implantName})
+	if err != nil {
+		return "", nil, err
+	}
+	if resp.File == nil {
+		return "", nil, fmt.Errorf("regenerate returned no artifact")
+	}
+	return resp.File.Name, resp.File.Data, nil
+}
+
 // GenerateStage - build a stager profile from an existing implant build id.
 func (s *SliverBridge) GenerateStage(params StageParams) (*ImplantBuildResult, error) {
 	c, err := s.requireClient()
@@ -73,7 +94,7 @@ type ImplantParams struct {
 	Name          string `json:"name"`
 	GOOS          string `json:"goos"`
 	GOARCH        string `json:"goarch"`
-	Format        string `json:"format"` // executable | shared | service | shellcode
+	Format        string `json:"format"` // executable | shared | service | shellcode | third-party (shared-lib build for third-party loaders)
 	Transport     string `json:"transport"` // mtls | http | https | dns | wg
 	LHost         string `json:"lhost"`
 	LPort         int    `json:"lport"`

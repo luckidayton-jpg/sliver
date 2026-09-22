@@ -36,7 +36,7 @@ func SliverExternal(name string, config *clientpb.ImplantConfig) (*clientpb.Exte
 	// set file extension for external builds
 	if config.Format == clientpb.OutputFormat_GO_ARCHIVE {
 		config.Extension = ".zip"
-	} else if config.IsSharedLib {
+	} else if config.IsSharedLib || config.Format == clientpb.OutputFormat_THIRD_PARTY {
 		switch config.GOOS {
 		case WINDOWS:
 			config.Extension = ".dll"

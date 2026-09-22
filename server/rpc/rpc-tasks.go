@@ -419,7 +419,9 @@ func getSliverShellcode(name string) ([]byte, string, error) {
 		}
 
 	case clientpb.OutputFormat_SHARED_LIB:
-		// retrieve DLL from db
+		fallthrough
+	case clientpb.OutputFormat_THIRD_PARTY:
+		// retrieve DLL from db (third-party builds are shared libraries)
 		fileData, err := generate.ImplantFileFromBuild(build)
 		if err != nil {
 			return []byte{}, "", err

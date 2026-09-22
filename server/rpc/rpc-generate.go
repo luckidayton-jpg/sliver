@@ -116,6 +116,11 @@ func (rpc *Server) Generate(ctx context.Context, req *clientpb.GenerateReq) (*cl
 		fPath, err = generate.SliverExecutable(name, build, config, httpC2Config.ImplantConfig)
 	case clientpb.OutputFormat_SHARED_LIB:
 		fPath, err = generate.SliverSharedLibrary(name, build, config, httpC2Config.ImplantConfig)
+	case clientpb.OutputFormat_THIRD_PARTY:
+		// Third-party plugin: a loadable implant module (.dll/.so/.dylib
+		// with C exports) for third-party loaders — same pipeline as a
+		// shared-library build.
+		fPath, err = generate.SliverSharedLibrary(name, build, config, httpC2Config.ImplantConfig)
 	case clientpb.OutputFormat_GO_ARCHIVE:
 		fPath, err = generate.SliverArchive(name, build, config, httpC2Config.ImplantConfig)
 	case clientpb.OutputFormat_SHELLCODE:
@@ -1116,6 +1121,11 @@ func (rpc *Server) GenerateStage(ctx context.Context, req *clientpb.GenerateStag
 	case clientpb.OutputFormat_EXECUTABLE:
 		fPath, err = generate.SliverExecutable(name, build, profile.Config, httpC2Config.ImplantConfig)
 	case clientpb.OutputFormat_SHARED_LIB:
+		fPath, err = generate.SliverSharedLibrary(name, build, profile.Config, httpC2Config.ImplantConfig)
+	case clientpb.OutputFormat_THIRD_PARTY:
+		// Third-party plugin: a loadable implant module (.dll/.so/.dylib
+		// with C exports) for third-party loaders — same pipeline as a
+		// shared-library build.
 		fPath, err = generate.SliverSharedLibrary(name, build, profile.Config, httpC2Config.ImplantConfig)
 	case clientpb.OutputFormat_GO_ARCHIVE:
 		fPath, err = generate.SliverArchive(name, build, profile.Config, httpC2Config.ImplantConfig)

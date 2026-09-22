@@ -210,6 +210,13 @@ func (b *Builder) handleBuildEvent(event *clientpb.Event) {
 		b.mutex.Lock()
 		fPath, err = generate.SliverSharedLibrary(extConfig.Build.Name, extConfig.Build, extConfig.Config, httpC2Config.ImplantConfig)
 		b.mutex.Unlock()
+	case clientpb.OutputFormat_THIRD_PARTY:
+		// Third-party plugin: a loadable implant module (.dll/.so/.dylib
+		// with C exports) for third-party loaders — same pipeline as a
+		// shared-library build.
+		b.mutex.Lock()
+		fPath, err = generate.SliverSharedLibrary(extConfig.Build.Name, extConfig.Build, extConfig.Config, httpC2Config.ImplantConfig)
+		b.mutex.Unlock()
 	case clientpb.OutputFormat_GO_ARCHIVE:
 		b.mutex.Lock()
 		fPath, err = generate.SliverArchive(extConfig.Build.Name, extConfig.Build, extConfig.Config, httpC2Config.ImplantConfig)

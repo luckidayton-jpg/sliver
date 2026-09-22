@@ -255,6 +255,8 @@ func nameOfOutputFormat(value clientpb.OutputFormat) string {
 		return "Service"
 	case clientpb.OutputFormat_SHARED_LIB:
 		return "Shared Library"
+	case clientpb.OutputFormat_THIRD_PARTY:
+		return "Third Party"
 	case clientpb.OutputFormat_GO_ARCHIVE:
 		return "Go Archive"
 	case clientpb.OutputFormat_SHELLCODE:
@@ -662,7 +664,7 @@ func validateSpoofMetadataSourceForTarget(config *clientpb.ImplantConfig, source
 		return fmt.Errorf("--%s path source currently supports only windows PE targets (got %s/%s)", spoofMetadataFlagName, config.GetGOOS(), config.GetGOARCH())
 	}
 	switch config.GetFormat() {
-	case clientpb.OutputFormat_EXECUTABLE, clientpb.OutputFormat_SERVICE, clientpb.OutputFormat_SHARED_LIB:
+	case clientpb.OutputFormat_EXECUTABLE, clientpb.OutputFormat_SERVICE, clientpb.OutputFormat_SHARED_LIB, clientpb.OutputFormat_THIRD_PARTY:
 	default:
 		return fmt.Errorf("--%s path source requires an executable/service/shared target format (got %s)", spoofMetadataFlagName, nameOfOutputFormat(config.GetFormat()))
 	}
@@ -688,7 +690,7 @@ func validateSpoofMetadataSourceForTarget(config *clientpb.ImplantConfig, source
 	}
 
 	isDLL := peFile.FileHeader.Characteristics&imageFileDLLCharacteristic != 0
-	if config.GetFormat() == clientpb.OutputFormat_SHARED_LIB && !isDLL {
+	if (config.GetFormat() == clientpb.OutputFormat_SHARED_LIB || config.GetFormat() == clientpb.OutputFormat_THIRD_PARTY) && !isDLL {
 		return fmt.Errorf("spoof metadata source %s must be a DLL for shared target format", sourcePath)
 	}
 	if (config.GetFormat() == clientpb.OutputFormat_EXECUTABLE || config.GetFormat() == clientpb.OutputFormat_SERVICE) && isDLL {
