@@ -141,6 +141,12 @@ func (s *SliverBridge) GetAIConversation(id string) (*AIConversationSummary, err
 // CreateAIConversation - create a conversation using the server-configured
 // provider/model (the dashboard never handles provider keys).
 func (s *SliverBridge) CreateAIConversation(title, systemPrompt string) (*AIConversationSummary, error) {
+	return s.CreateAIConversationScoped(title, systemPrompt, "", "")
+}
+
+// CreateAIConversationScoped creates a conversation optionally bound to one
+// session or beacon, scoping the server-side tool surface to that endpoint.
+func (s *SliverBridge) CreateAIConversationScoped(title, systemPrompt, targetSessionID, targetBeaconID string) (*AIConversationSummary, error) {
 	c, err := s.requireClient()
 	if err != nil {
 		return nil, err
@@ -161,10 +167,12 @@ func (s *SliverBridge) CreateAIConversation(title, systemPrompt string) (*AIConv
 	}
 
 	conv, err := c.SaveAIConversation(context.Background(), &clientpb.AIConversation{
-		Provider:     provider,
-		Model:        model,
-		Title:        title,
-		SystemPrompt: strings.TrimSpace(systemPrompt),
+		Provider:        provider,
+		Model:           model,
+		Title:           title,
+		SystemPrompt:    strings.TrimSpace(systemPrompt),
+		TargetSessionID: strings.TrimSpace(targetSessionID),
+		TargetBeaconID:  strings.TrimSpace(targetBeaconID),
 	})
 	if err != nil {
 		return nil, err

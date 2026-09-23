@@ -18,8 +18,8 @@ func minimalPE(machine uint16, dll bool) []byte {
 	if dll {
 		chars |= pe.IMAGE_FILE_DLL
 	}
-	binary.LittleEndian.PutUint16(buf[0x96:], chars)  // COFF Characteristics
-	binary.LittleEndian.PutUint16(buf[0x98:], 0x10b)  // Optional header magic (PE32)
+	binary.LittleEndian.PutUint16(buf[0x96:], chars) // COFF Characteristics
+	binary.LittleEndian.PutUint16(buf[0x98:], 0x10b) // Optional header magic (PE32)
 	return buf
 }
 

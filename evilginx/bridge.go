@@ -293,6 +293,7 @@ func (s *SliverBridge) ListSessions() ([]SessionSummary, error) {
 			PID:           sess.PID,
 			LastCheckin:   sess.LastCheckin,
 			ActiveC2:      sess.ActiveC2,
+			IsDead:        sess.IsDead,
 		})
 	}
 	return out, nil
@@ -333,6 +334,7 @@ type SessionSummary struct {
 	PID           int32  `json:"pid"`
 	LastCheckin   int64  `json:"last_checkin"`
 	ActiveC2      string `json:"active_c2,omitempty"`
+	IsDead        bool   `json:"is_dead"`
 }
 
 type JobSummary struct {

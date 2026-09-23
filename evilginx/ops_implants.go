@@ -5,6 +5,8 @@ import (
 	"context"
 	"debug/pe"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/bishopfox/sliver/protobuf/clientpb"
 )
@@ -24,6 +26,15 @@ func (s *SliverBridge) GenerateImplant(params ImplantParams) (*ImplantBuildResul
 	cfg, err := buildImplantConfig(params)
 	if err != nil {
 		return nil, err
+	}
+
+	// Validate the spoof donor BEFORE compiling so a bad donor fails fast
+	// instead of wasting a full build (the server re-validates anyway).
+	spoof := len(params.SpoofDonorData) > 0
+	if spoof {
+		if err := validateSpoofDonor(params, params.SpoofDonorData); err != nil {
+			return nil, err
+		}
 	}
 
 	resp, err := c.Generate(context.Background(), &clientpb.GenerateReq{
@@ -46,10 +57,7 @@ func (s *SliverBridge) GenerateImplant(params ImplantParams) (*ImplantBuildResul
 	// Optional Windows metadata spoofing: exactly one build selector
 	// (the fresh ImplantBuildID) is sent, then the spoofed bytes are
 	// re-fetched so the dashboard serves the final artifact.
-	if len(params.SpoofDonorData) > 0 {
-		if err := validateSpoofDonor(params, params.SpoofDonorData); err != nil {
-			return nil, err
-		}
+	if spoof {
 		if _, err := c.GenerateSpoofMetadata(context.Background(), &clientpb.GenerateSpoofMetadataReq{
 			ImplantBuildID: resp.ImplantBuildID,
 			SpoofMetadata: &clientpb.SpoofMetadataConfig{
@@ -61,6 +69,8 @@ func (s *SliverBridge) GenerateImplant(params ImplantParams) (*ImplantBuildResul
 				},
 			},
 		}); err != nil {
+			// Don't leave an unspoofed orphan registered on the server.
+			_, _ = c.DeleteImplantBuild(context.Background(), &clientpb.DeleteReq{Name: resp.ImplantName})
 			return nil, fmt.Errorf("metadata spoof failed: %w", err)
 		}
 		name, data, err := s.GetBuildArtifact(resp.ImplantName)
@@ -147,6 +157,10 @@ type ImplantParams struct {
 	// Windows targets only; exactly one donor per build.
 	SpoofDonorName string `json:"spoof_donor_name"`
 	SpoofDonorData []byte `json:"spoof_donor_data"`
+	// ExtraC2 lists additional callback URLs (one per line in the dashboard),
+	// e.g. ["https://c2.example.com", "dns://ns.example.com"]. Each must
+	// carry an mtls, http, https, dns or wg scheme.
+	ExtraC2 []string `json:"extra_c2_urls"`
 }
 
 // defaultHTTPC2Profile mirrors consts.DefaultC2Profile on the server; the
@@ -300,6 +314,29 @@ func buildImplantConfig(p ImplantParams) (*clientpb.ImplantConfig, error) {
 		cfg.C2 = append(cfg.C2, &clientpb.ImplantC2{URL: fmt.Sprintf("wg://%s:%d", p.LHost, p.LPort)})
 	default:
 		return nil, fmt.Errorf("unknown transport: %s", p.Transport)
+	}
+	for _, raw := range p.ExtraC2 {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.Host == "" {
+			return nil, fmt.Errorf("invalid extra C2 URL %q", raw)
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "mtls":
+			cfg.IncludeMTLS = true
+		case "http", "https":
+			cfg.IncludeHTTP = true
+		case "dns":
+			cfg.IncludeDNS = true
+		case "wg":
+			cfg.IncludeWG = true
+		default:
+			return nil, fmt.Errorf("extra C2 URL %q has unsupported scheme (mtls|http|https|dns|wg)", raw)
+		}
+		cfg.C2 = append(cfg.C2, &clientpb.ImplantC2{URL: raw})
 	}
 	return cfg, nil
 }
