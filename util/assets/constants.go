@@ -7,10 +7,6 @@ const (
 	zigSourceParam = "source=sliver"
 
 	zigMinisignPublicKey = "RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
-
-	goTotal     = 6
-	zigTotal    = 6
-	garbleTotal = 6
 )
 
 var defaultZigMirrors = []string{

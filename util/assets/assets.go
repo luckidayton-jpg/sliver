@@ -15,6 +15,7 @@ type runner struct {
 	httpClient         *http.Client
 	outputDir          string
 	workDir            string
+	target             platformTarget
 	downloadAttempts   int
 	downloadRetryDelay time.Duration
 	goIndex            int
@@ -33,6 +34,8 @@ type config struct {
 	verbose bool
 	quiet   bool
 	noColor bool
+	os      string
+	arch    string
 }
 
 // Run executes the asset generation flow.
@@ -55,6 +58,11 @@ func Run(args []string) error {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
+	target, err := resolvePlatformTarget(cfg.os, cfg.arch)
+	if err != nil {
+		return err
+	}
+
 	workDir, err := os.MkdirTemp("", "sliver-assets-")
 	if err != nil {
 		return fmt.Errorf("create work dir: %w", err)
@@ -66,6 +74,7 @@ func Run(args []string) error {
 		httpClient:         &http.Client{Timeout: downloadTimeout},
 		outputDir:          outputDir,
 		workDir:            workDir,
+		target:             target,
 		downloadAttempts:   defaultDownloadAttempts,
 		downloadRetryDelay: defaultDownloadDelay,
 	}
@@ -73,6 +82,9 @@ func Run(args []string) error {
 	log.Header("Sliver Assets")
 	log.Meta("Workdir", workDir)
 	log.Meta("Output", outputDir)
+	if target.scoped() {
+		log.Meta("Target", target.String())
+	}
 
 	defer func() {
 		log.ClearSection()
@@ -101,8 +113,15 @@ func parseArgs(args []string) (config, bool, error) {
 	cfg := config{}
 	showHelp := false
 
-	for _, arg := range args {
-		switch arg {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		// Normalize "--flag=value" into "--flag", "value" so both spellings
+		// reach the same case below.
+		flag, inlineValue, hasInline := strings.Cut(arg, "=")
+		hasInline = hasInline && strings.HasPrefix(flag, "-")
+
+		var flagTarget *string
+		switch flag {
 		case "-v", "--verbose":
 			cfg.verbose = true
 		case "--no-colors":
@@ -111,9 +130,39 @@ func parseArgs(args []string) (config, bool, error) {
 			cfg.quiet = true
 		case "-h", "--help":
 			showHelp = true
+		case "-os", "--os":
+			flagTarget = &cfg.os
+		case "-arch", "--arch":
+			flagTarget = &cfg.arch
 		default:
 			return config{}, false, fmt.Errorf("unknown argument: %s", arg)
 		}
+
+		if flagTarget == nil {
+			// Boolean flags take no value; "--verbose=x" is a mistake.
+			if hasInline {
+				return config{}, false, fmt.Errorf("%s does not take a value", flag)
+			}
+			continue
+		}
+
+		value := inlineValue
+		if !hasInline {
+			if i+1 >= len(args) {
+				return config{}, false, fmt.Errorf("%s requires a value", flag)
+			}
+			i++
+			value = args[i]
+		}
+		if strings.TrimSpace(value) == "" {
+			return config{}, false, fmt.Errorf("%s requires a non-empty value", flag)
+		}
+		// Catch a forgotten value ("-os --verbose") rather than silently
+		// accepting the next flag as the platform name.
+		if strings.HasPrefix(value, "-") {
+			return config{}, false, fmt.Errorf("%s requires a value, got flag %s", flag, value)
+		}
+		*flagTarget = value
 	}
 
 	if cfg.quiet {
@@ -124,7 +173,23 @@ func parseArgs(args []string) (config, bool, error) {
 }
 
 func usage() string {
-	return "Usage: assets [--verbose] [--quiet] [--no-colors]"
+	return `Usage: assets [options]
+
+Options:
+  -v, --verbose   Verbose output
+      --quiet     Suppress progress output
+      --no-colors Disable colored output
+  -h, --help      Show this help
+
+Platform selection (defaults to every platform; falls back to GOOS/GOARCH):
+  -os, --os       Target operating system (darwin, linux, windows)
+  -arch, --arch   Target architecture (amd64, arm64)
+
+Examples:
+  assets                          # build every platform bundle
+  assets -os linux -arch amd64    # build only linux/amd64
+  GOARCH=arm64 assets             # build only the current GOARCH
+`
 }
 
 func findRepoRoot() (string, error) {

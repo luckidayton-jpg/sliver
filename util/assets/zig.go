@@ -23,6 +23,17 @@ type zigPlatform struct {
 	localName  string
 }
 
+// zigPlatforms is the full matrix of Zig compilers the server embeds. Only
+// entries matching the active target are downloaded.
+var zigPlatforms = []zigPlatform{
+	{os: "darwin", arch: "amd64", remoteName: fmt.Sprintf("zig-x86_64-macos-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
+	{os: "darwin", arch: "arm64", remoteName: fmt.Sprintf("zig-aarch64-macos-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
+	{os: "linux", arch: "amd64", remoteName: fmt.Sprintf("zig-x86_64-linux-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
+	{os: "linux", arch: "arm64", remoteName: fmt.Sprintf("zig-aarch64-linux-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
+	{os: "windows", arch: "amd64", remoteName: fmt.Sprintf("zig-x86_64-windows-%s.zip", zigVersion), localName: "zig.zip"},
+	{os: "windows", arch: "arm64", remoteName: fmt.Sprintf("zig-aarch64-windows-%s.zip", zigVersion), localName: "zig.zip"},
+}
+
 func (r *runner) buildZigAssets() error {
 	r.logger.Section("Zig")
 
@@ -30,22 +41,28 @@ func (r *runner) buildZigAssets() error {
 		return err
 	}
 
-	platforms := []zigPlatform{
-		{os: "darwin", arch: "amd64", remoteName: fmt.Sprintf("zig-x86_64-macos-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
-		{os: "darwin", arch: "arm64", remoteName: fmt.Sprintf("zig-aarch64-macos-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
-		{os: "linux", arch: "amd64", remoteName: fmt.Sprintf("zig-x86_64-linux-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
-		{os: "linux", arch: "arm64", remoteName: fmt.Sprintf("zig-aarch64-linux-%s.tar.xz", zigVersion), localName: "zig.tar.xz"},
-		{os: "windows", arch: "amd64", remoteName: fmt.Sprintf("zig-x86_64-windows-%s.zip", zigVersion), localName: "zig.zip"},
-		{os: "windows", arch: "arm64", remoteName: fmt.Sprintf("zig-aarch64-windows-%s.zip", zigVersion), localName: "zig.zip"},
+	platforms := selectZigPlatforms(zigPlatforms, r.target)
+	if len(platforms) == 0 {
+		return fmt.Errorf("no Zig assets available for target %s", r.target)
 	}
 
 	for _, platform := range platforms {
-		if err := r.downloadZig(platform); err != nil {
+		if err := r.downloadZig(platform, len(platforms)); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func selectZigPlatforms(platforms []zigPlatform, t platformTarget) []zigPlatform {
+	selected := make([]zigPlatform, 0, len(platforms))
+	for _, p := range platforms {
+		if t.matches(p.os, p.arch) {
+			selected = append(selected, p)
+		}
+	}
+	return selected
 }
 
 func (r *runner) loadZigMirrors() error {
@@ -91,7 +108,7 @@ func parseZigMirrors(reader io.Reader) ([]string, error) {
 	return mirrors, nil
 }
 
-func (r *runner) downloadZig(platform zigPlatform) error {
+func (r *runner) downloadZig(platform zigPlatform, total int) error {
 	outputDir := filepath.Join(r.outputDir, platform.os, platform.arch)
 	if err := ensureDir(outputDir); err != nil {
 		return err
@@ -108,7 +125,7 @@ func (r *runner) downloadZig(platform zigPlatform) error {
 		artifactURL := appendQueryParam(mirrorBase+"/"+platform.remoteName, zigSourceParam)
 		signatureURL := appendQueryParam(mirrorBase+"/"+platform.remoteName+".minisig", zigSourceParam)
 
-		r.logger.Logf("Fetch zig %s/%s (%d/%d) via %s", platform.os, platform.arch, r.zigIndex, zigTotal, mirrorBase)
+		r.logger.Logf("Fetch zig %s/%s (%d/%d) via %s", platform.os, platform.arch, r.zigIndex, total, mirrorBase)
 		r.logger.VLogf("  artifact:  %s", artifactURL)
 		r.logger.VLogf("  signature: %s", signatureURL)
 
