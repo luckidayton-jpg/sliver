@@ -36,7 +36,13 @@ const (
 
 	goPathDirName   = "gopath"
 	versionFileName = "version"
-	envVarName      = "SLIVER_ROOT_DIR"
+	// EnvVarName is the environment variable the server reads its root directory
+	// from. Exported because the embedded bridge sets it: the bridge stages its AI
+	// config under its own app directory, and if the two disagree about this name the
+	// server reads a different tree than the bridge writes and reports no provider
+	// configured with no error anywhere. Nothing asserted the name, which is how that
+	// happened.
+	EnvVarName = "SLIVER_ROOT_DIR"
 )
 
 var (
@@ -45,7 +51,7 @@ var (
 
 // GetRootAppDir - Get the Sliver app dir, default is: ~/.sliver/
 func GetRootAppDir() string {
-	value := os.Getenv(envVarName)
+	value := os.Getenv(EnvVarName)
 	var dir string
 	if len(value) == 0 {
 		user, _ := user.Current()

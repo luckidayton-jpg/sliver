@@ -52,15 +52,15 @@ import (
 const (
 	OperatorName = "xavier"
 
-	defaultListenPort = uint16(31337)
+	defaultListenPort  = uint16(31337)
 	grpcConnectTimeout = 10 * time.Second
 	grpcMaxMessageSize = 2 * 1024 * 1024 * 1024 // 2Gb - 1
 )
 
 // SliverConfig - options for starting the embedded Sliver server.
 type SliverConfig struct {
-	Host  string
-	Port  uint16
+	Host   string
+	Port   uint16
 	AppDir string // isolated SLIVER_APP_DIR (must be absolute)
 }
 
@@ -97,6 +97,32 @@ func (t tokenAuth) GetRequestMetadata(ctx context.Context, in ...string) (map[st
 
 func (tokenAuth) RequireTransportSecurity() bool { return true }
 
+// applyAppDirEnv points the server's file layout at the bridge's app directory.
+//
+// Two variables, because they are two different things and only one of them was being
+// set. The server resolves its root directory from SLIVER_ROOT_DIR
+// (assets.envVarName) and not from SLIVER_APP_DIR, so setting only the latter left
+// the daemon reading its own default -- $HOME/.sliver, or <cwd>/.sliver -- while
+// everything the bridge staged went under AppDir. The two never met: a working
+// provider sat in a file nothing read, and the server reported no provider configured
+// with no error anywhere to say why. Nothing asserted the name, which is how the two
+// drifted apart without anything failing.
+//
+// Extracted from Start so the contract can be tested against the package that reads
+// it, rather than only at runtime with a whole daemon up.
+func applyAppDirEnv(appDir string) error {
+	if appDir == "" {
+		return nil
+	}
+	if err := os.Setenv("SLIVER_APP_DIR", appDir); err != nil {
+		return fmt.Errorf("sliver bridge: %w", err)
+	}
+	if err := os.Setenv("SLIVER_ROOT_DIR", appDir); err != nil {
+		return fmt.Errorf("sliver bridge: %w", err)
+	}
+	return nil
+}
+
 // NewBridge - construct a bridge, no side effects until Start().
 func NewBridge(cfg *SliverConfig) *SliverBridge {
 	if cfg == nil {
@@ -114,10 +140,8 @@ func (s *SliverBridge) Start() error {
 		return fmt.Errorf("sliver bridge: already started")
 	}
 
-	if s.config.AppDir != "" {
-		if err := os.Setenv("SLIVER_APP_DIR", s.config.AppDir); err != nil {
-			return fmt.Errorf("sliver bridge: %w", err)
-		}
+	if err := applyAppDirEnv(s.config.AppDir); err != nil {
+		return err
 	}
 
 	assets.Setup(false, false)
@@ -178,8 +202,8 @@ func (s *SliverBridge) dial() error {
 	caPool := certPool(s.operatorCfg.CACertificate)
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{mustTLSCert(s.operatorCfg.Certificate, s.operatorCfg.PrivateKey)},
-		RootCAs:       caPool,
-		MinVersion:    tls.VersionTLS12,
+		RootCAs:      caPool,
+		MinVersion:   tls.VersionTLS12,
 		// Sliver operator certs are minted with opaque identities and no IP
 		// SANs; the console client pins the CA chain instead of the hostname
 		// (root-only verification). We mirror that here.
@@ -230,15 +254,15 @@ func (s *SliverBridge) Running() bool {
 
 // Status - quick health snapshot for the web console.
 type Status struct {
-	Running    bool   `json:"running"`
-	Operator   string `json:"operator"`
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	AppDir     string `json:"app_dir"`
-	Sessions   int    `json:"sessions"`
-	Jobs       int    `json:"jobs"`
-	Version    string `json:"version"`
-	Error      string `json:"error,omitempty"`
+	Running  bool   `json:"running"`
+	Operator string `json:"operator"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	AppDir   string `json:"app_dir"`
+	Sessions int    `json:"sessions"`
+	Jobs     int    `json:"jobs"`
+	Version  string `json:"version"`
+	Error    string `json:"error,omitempty"`
 }
 
 func (s *SliverBridge) Status() *Status {
