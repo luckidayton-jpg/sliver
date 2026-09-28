@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bishopfox/sliver/server/configs"
 	"github.com/bishopfox/sliver/server/log"
 	"gopkg.in/yaml.v3"
 )
@@ -20,15 +21,29 @@ type PlatformAIConfig struct {
 	Model   string
 }
 
-// aiYAMLEnvelope is the minimal surface of the server's configs/ai.yaml we
-// touch. It mirrors configs.AIConfig; an incomplete file is fine because the
-// server normalizes + rewrites missing fields on its next config load.
-type aiYAMLEnvelope struct {
-	AI *aiYAMLAIConfig `yaml:"ai"`
-}
-
-type aiYAMLAIConfig struct {
+// aiYAMLConfig is the on-disk shape of configs/ai.yaml.
+//
+// FLAT, and that is load-bearing. The server's own reader does:
+//
+//	config := defaultAIConfig()
+//	yaml.Unmarshal(data, config)   // straight into *AIConfig, not an envelope
+//	config.Save()
+//
+// so a file wrapped in an `ai:` key unmarshals into nothing at all: every field keeps
+// its default, the provider selector stays empty, and the Save() that immediately
+// follows writes those blanks back over the staged file. The key is not lost by
+// anything at runtime -- it is never read in the first place, and then overwritten by
+// the read that failed to find it. That is why staging appeared to do nothing, and why
+// the file on disk came to hold an empty provider beside empty keys.
+//
+// Mirrors configs.AIConfig rather than wrapping it, and the test
+// TestStagedConfigIsReadableByTheServer parses what is written with the server's own
+// reader so the two shapes cannot drift apart again.
+type aiYAMLConfig struct {
 	Provider     string          `yaml:"provider"`
+	Model        string          `yaml:"model,omitempty"`
+	ThinkingLvl  string          `yaml:"thinking_level,omitempty"`
+	SystemPrompt string          `yaml:"system_prompt,omitempty"`
 	Anthropic    *aiYAMLProvider `yaml:"anthropic"`
 	Google       *aiYAMLProvider `yaml:"google"`
 	OpenAI       *aiYAMLProvider `yaml:"openai"`
@@ -40,6 +55,33 @@ type aiYAMLProvider struct {
 	APIKey  string   `yaml:"api_key"`
 	BaseURL string   `yaml:"base_url"`
 	Models  []string `yaml:"models,omitempty"`
+}
+
+// readAIConfigWithServer parses a file the way the server parses it.
+//
+// It goes through configs.AIConfig rather than a local mirror, because a mirror
+// cannot disagree with the writer by accident -- and that is how the envelope shape
+// survived every local check while the server read nothing.
+func readAIConfigWithServer(path string) (*aiYAMLConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// Same shape the server's reader produces, filled by the server's own type.
+	var server configs.AIConfig
+	if err := yaml.Unmarshal(data, &server); err != nil {
+		return nil, err
+	}
+	// And out through ours, so the caller checks the same fields the server will.
+	back, err := yaml.Marshal(&server)
+	if err != nil {
+		return nil, err
+	}
+	out := &aiYAMLConfig{}
+	if err := yaml.Unmarshal(back, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *SliverBridge) localAIConfigPath() string {
@@ -55,7 +97,7 @@ func emptyAIYAMLProvider() *aiYAMLProvider {
 //
 // A base URL alone is not credentials. It is the default every block carries, so
 // counting it as "configured" made an empty file look configured.
-func localAIProvider(ai *aiYAMLAIConfig) *aiYAMLProvider {
+func localAIProvider(ai *aiYAMLConfig) *aiYAMLProvider {
 	if ai == nil {
 		return nil
 	}
@@ -94,11 +136,11 @@ func (s *SliverBridge) LocalAIConfigured() bool {
 	if err != nil {
 		return false
 	}
-	var env aiYAMLEnvelope
+	var env aiYAMLConfig
 	if err := yaml.Unmarshal(data, &env); err != nil {
 		return false
 	}
-	return providerHasCredentials(localAIProvider(env.AI))
+	return providerHasCredentials(localAIProvider(&env))
 }
 
 // LocalAIState - why LocalAIConfigured answered what it did, for a log line or an
@@ -118,15 +160,12 @@ func (s *SliverBridge) LocalAIState() LocalAIState {
 		return st
 	}
 	st.Exists = true
-	var env aiYAMLEnvelope
+	var env aiYAMLConfig
 	if err := yaml.Unmarshal(data, &env); err != nil {
 		return st
 	}
-	if env.AI == nil {
-		return st
-	}
-	st.Provider = strings.TrimSpace(env.AI.Provider)
-	st.HasKey = providerHasCredentials(localAIProvider(env.AI))
+	st.Provider = strings.TrimSpace(env.Provider)
+	st.HasKey = providerHasCredentials(localAIProvider(&env))
 	return st
 }
 
@@ -176,28 +215,28 @@ func (s *SliverBridge) StagePlatformAI(cfg PlatformAIConfig) error {
 	if model != "" {
 		prov.Models = []string{model}
 	}
-	env := &aiYAMLEnvelope{AI: &aiYAMLAIConfig{
+	out := &aiYAMLConfig{
 		Provider:     provider,
 		Anthropic:    emptyAIYAMLProvider(),
 		Google:       emptyAIYAMLProvider(),
 		OpenAI:       emptyAIYAMLProvider(),
 		OpenAICompat: emptyAIYAMLProvider(),
 		OpenRouter:   emptyAIYAMLProvider(),
-	}}
+	}
 	switch provider {
 	case "anthropic":
-		env.AI.Anthropic = prov
+		out.Anthropic = prov
 	case "google":
-		env.AI.Google = prov
+		out.Google = prov
 	case "openai":
-		env.AI.OpenAI = prov
+		out.OpenAI = prov
 	case "openrouter":
-		env.AI.OpenRouter = prov
+		out.OpenRouter = prov
 	default:
-		env.AI.OpenAICompat = prov
+		out.OpenAICompat = prov
 	}
 
-	data, err := yaml.Marshal(env)
+	data, err := yaml.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("sliver bridge: marshal platform AI config: %w", err)
 	}
@@ -209,12 +248,21 @@ func (s *SliverBridge) StagePlatformAI(cfg PlatformAIConfig) error {
 		return fmt.Errorf("sliver bridge: write platform AI config: %w", err)
 	}
 
-	// Read it back. A write that reports success and leaves the file unchanged is the
-	// failure mode this whole function is meant to be immune to, and the only way to
-	// know it did not happen is to look.
-	if !s.LocalAIConfigured() {
-		return fmt.Errorf("sliver bridge: staged platform AI config at %s but the file "+
-			"still reads as unconfigured", s.localAIConfigPath())
+	// Read it back with the SERVER's reader, not our own mirror of the file.
+	//
+	// Our mirror agreeing with our writer proves nothing: that is exactly how a file
+	// wrapped in an envelope passed every check here while the server read nothing
+	// from it and overwrote it. The only reader that matters is the one the server
+	// actually uses.
+	verify, err := readAIConfigWithServer(s.localAIConfigPath())
+	if err != nil {
+		return fmt.Errorf("sliver bridge: staged platform AI config at %s but the "+
+			"server's own reader rejected it: %w", s.localAIConfigPath(), err)
+	}
+	if !providerHasCredentials(localAIProvider(verify)) {
+		return fmt.Errorf("sliver bridge: staged platform AI config at %s but the "+
+			"server's own reader sees no selected provider (provider=%q)",
+			s.localAIConfigPath(), verify.Provider)
 	}
 	log.NamedLogger("bridge", "ai").Info(
 		"staged the platform AI provider into the server config",

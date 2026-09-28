@@ -8,19 +8,22 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The bug this file exists for.
+// The two bugs this file exists for.
 //
 // The bridge set SLIVER_APP_DIR, but the server reads SLIVER_ROOT_DIR
-// (assets.envVarName). So the daemon resolved its own default root -- $HOME/.sliver,
+// (assets.EnvVarName). So the daemon resolved its own default root -- $HOME/.sliver,
 // or <cwd>/.sliver -- while the staged AI config was written under AppDir. The two
 // never met: a working provider sat in a file nothing read, and the server reported
-// no provider configured.
+// no provider configured with no error anywhere to explain the gap.
 //
 // On top of that, LocalAIConfigured reported true when ANY provider block held a key
 // or a base URL. The server reads the `provider` selector, so a file with credentials
 // and an empty selector is exactly what the server calls unconfigured. The guard
 // therefore said "configured", StagePlatformAI skipped the seed, and the self-heal
 // that called it returned success having done nothing.
+//
+// Every fixture below is FLAT, because the file the server reads has no envelope.
+// See ops_ai_shape_test.go for the shape itself and why it was wrong for so long.
 
 func writeAIYAML(t *testing.T, appDir, body string) {
 	t.Helper()
@@ -47,30 +50,30 @@ func TestLocalAIConfigured_RequiresASelectedProvider(t *testing.T) {
 		{
 			// The state that was reported as configured and served as unconfigured.
 			name: "credentials present but nothing selected",
-			yaml: "ai:\n  provider: \"\"\n  openrouter:\n    api_key: sk-x\n    base_url: https://openrouter.ai/api/v1\n",
+			yaml: "provider: \"\"\nopenrouter:\n  api_key: sk-x\n  base_url: https://openrouter.ai/api/v1\n",
 			want: false,
 		},
 		{
 			name: "selected and keyed",
-			yaml: "ai:\n  provider: openrouter\n  openrouter:\n    api_key: sk-x\n    base_url: https://openrouter.ai/api/v1\n",
+			yaml: "provider: openrouter\nopenrouter:\n  api_key: sk-x\n  base_url: https://openrouter.ai/api/v1\n",
 			want: true,
 		},
 		{
 			name: "selected but the key is blank",
-			yaml: "ai:\n  provider: openrouter\n  openrouter:\n    api_key: \"\"\n    base_url: https://openrouter.ai/api/v1\n",
+			yaml: "provider: openrouter\nopenrouter:\n  api_key: \"\"\n  base_url: https://openrouter.ai/api/v1\n",
 			want: false,
 		},
 		{
 			// A base URL is what every block carries by default, so counting it as
 			// credentials made an untouched file look configured.
 			name: "selected with only a base URL",
-			yaml: "ai:\n  provider: openrouter\n  openrouter:\n    api_key: \"\"\n    base_url: https://openrouter.ai/api/v1\n",
+			yaml: "provider: openrouter\nopenrouter:\n  api_key: \"\"\n  base_url: https://openrouter.ai/api/v1\n",
 			want: false,
 		},
 		{
 			// The key is under a different provider than the one selected.
 			name: "keyed but not under the selected provider",
-			yaml: "ai:\n  provider: anthropic\n  anthropic:\n    api_key: \"\"\n  openrouter:\n    api_key: sk-x\n",
+			yaml: "provider: anthropic\nanthropic:\n  api_key: \"\"\nopenrouter:\n  api_key: sk-x\n",
 			want: false,
 		},
 		{
@@ -79,14 +82,21 @@ func TestLocalAIConfigured_RequiresASelectedProvider(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "no ai section",
+			name: "no ai section at all",
 			yaml: "other: 1\n",
 			want: false,
 		},
 		{
 			name: "openai-compat spelled with an underscore",
-			yaml: "ai:\n  provider: openai_compat\n  openai_compat:\n    api_key: sk-x\n",
+			yaml: "provider: openai_compat\nopenai_compat:\n  api_key: sk-x\n",
 			want: true,
+		},
+		{
+			// The shape this whole feature used to write, kept as a case: the server
+			// reads nothing inside an envelope, so it must read as unconfigured.
+			name: "wrapped in an envelope, which the server cannot read",
+			yaml: "ai:\n  provider: openrouter\n  openrouter:\n    api_key: sk-x\n",
+			want: false,
 		},
 	}
 
@@ -105,7 +115,7 @@ func TestLocalAIConfigured_RequiresASelectedProvider(t *testing.T) {
 func TestStagePlatformAI_SeedsWhenTheSelectorIsEmpty(t *testing.T) {
 	dir := t.TempDir()
 	// The real-world shape: credentials landed in the file, the selector did not.
-	writeAIYAML(t, dir, "ai:\n  provider: \"\"\n  openrouter:\n    api_key: stale\n    base_url: https://openrouter.ai/api/v1\n")
+	writeAIYAML(t, dir, "provider: \"\"\nopenrouter:\n  api_key: stale\n  base_url: https://openrouter.ai/api/v1\n")
 	b := newTestBridge(t, dir)
 
 	if b.LocalAIConfigured() {
@@ -126,18 +136,18 @@ func TestStagePlatformAI_SeedsWhenTheSelectorIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	var env aiYAMLEnvelope
-	if err := yaml.Unmarshal(raw, &env); err != nil {
+	var cfg aiYAMLConfig
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if env.AI == nil || env.AI.Provider != "openrouter" {
-		t.Errorf("provider = %+v, want openrouter", env.AI)
+	if cfg.Provider != "openrouter" {
+		t.Errorf("provider = %q, want openrouter", cfg.Provider)
 	}
-	if env.AI.OpenRouter == nil || env.AI.OpenRouter.APIKey != "sk-platform" {
-		t.Errorf("openrouter block = %+v, want the platform key", env.AI.OpenRouter)
+	if cfg.OpenRouter == nil || cfg.OpenRouter.APIKey != "sk-platform" {
+		t.Errorf("openrouter block = %+v, want the platform key", cfg.OpenRouter)
 	}
-	if len(env.AI.OpenRouter.Models) != 1 || env.AI.OpenRouter.Models[0] != "openrouter/auto" {
-		t.Errorf("models = %v, want [openrouter/auto]", env.AI.OpenRouter.Models)
+	if len(cfg.OpenRouter.Models) != 1 || cfg.OpenRouter.Models[0] != "openrouter/auto" {
+		t.Errorf("models = %v, want [openrouter/auto]", cfg.OpenRouter.Models)
 	}
 }
 
@@ -146,7 +156,7 @@ func TestStagePlatformAI_SeedsWhenTheSelectorIsEmpty(t *testing.T) {
 // case, which is why the two were conflated.
 func TestStagePlatformAI_LeavesACompleteOperatorConfigAlone(t *testing.T) {
 	dir := t.TempDir()
-	writeAIYAML(t, dir, "ai:\n  provider: anthropic\n  anthropic:\n    api_key: sk-operator\n")
+	writeAIYAML(t, dir, "provider: anthropic\nanthropic:\n  api_key: sk-operator\n")
 	b := newTestBridge(t, dir)
 
 	if err := b.StagePlatformAI(PlatformAIConfig{
@@ -157,10 +167,10 @@ func TestStagePlatformAI_LeavesACompleteOperatorConfigAlone(t *testing.T) {
 	}
 
 	raw, _ := os.ReadFile(b.localAIConfigPath())
-	var env aiYAMLEnvelope
-	_ = yaml.Unmarshal(raw, &env)
-	if env.AI.Anthropic.APIKey != "sk-operator" {
-		t.Errorf("the operator's key was overwritten: %+v", env.AI.Anthropic)
+	var cfg aiYAMLConfig
+	_ = yaml.Unmarshal(raw, &cfg)
+	if cfg.Anthropic.APIKey != "sk-operator" {
+		t.Errorf("the operator's key was overwritten: %+v", cfg.Anthropic)
 	}
 }
 
@@ -169,7 +179,7 @@ func TestStagePlatformAI_LeavesACompleteOperatorConfigAlone(t *testing.T) {
 // not.
 func TestStagePlatformAI_KeepsAnOperatorChosenProviderAndFillsTheKey(t *testing.T) {
 	dir := t.TempDir()
-	writeAIYAML(t, dir, "ai:\n  provider: anthropic\n  anthropic:\n    api_key: \"\"\n")
+	writeAIYAML(t, dir, "provider: anthropic\nanthropic:\n  api_key: \"\"\n")
 	b := newTestBridge(t, dir)
 
 	if err := b.StagePlatformAI(PlatformAIConfig{
@@ -180,14 +190,14 @@ func TestStagePlatformAI_KeepsAnOperatorChosenProviderAndFillsTheKey(t *testing.
 	}
 
 	raw, _ := os.ReadFile(b.localAIConfigPath())
-	var env aiYAMLEnvelope
-	_ = yaml.Unmarshal(raw, &env)
-	if env.AI.Provider != "anthropic" {
+	var cfg aiYAMLConfig
+	_ = yaml.Unmarshal(raw, &cfg)
+	if cfg.Provider != "anthropic" {
 		t.Errorf("provider = %q, want the operator's anthropic kept, not switched to "+
-			"the platform's implied provider", env.AI.Provider)
+			"the platform's implied provider", cfg.Provider)
 	}
-	if env.AI.Anthropic.APIKey != "sk-platform" {
-		t.Errorf("the blank key was not filled: %+v", env.AI.Anthropic)
+	if cfg.Anthropic.APIKey != "sk-platform" {
+		t.Errorf("the blank key was not filled: %+v", cfg.Anthropic)
 	}
 }
 
@@ -214,23 +224,23 @@ func TestStagePlatformAI_VerifiesTheWriteTookEffect(t *testing.T) {
 
 func TestStagePlatformAI_LeavesTheFileAloneWithNoPlatformKey(t *testing.T) {
 	dir := t.TempDir()
-	writeAIYAML(t, dir, "ai:\n  provider: anthropic\n  anthropic:\n    api_key: sk-operator\n")
+	writeAIYAML(t, dir, "provider: anthropic\nanthropic:\n  api_key: sk-operator\n")
 	b := newTestBridge(t, dir)
 
 	if err := b.StagePlatformAI(PlatformAIConfig{BaseURL: "https://x.test"}); err != nil {
 		t.Fatalf("StagePlatformAI: %v", err)
 	}
 	raw, _ := os.ReadFile(b.localAIConfigPath())
-	var env aiYAMLEnvelope
-	_ = yaml.Unmarshal(raw, &env)
-	if env.AI.Anthropic.APIKey != "sk-operator" {
-		t.Errorf("an empty platform key still rewrote the file: %+v", env.AI.Anthropic)
+	var cfg aiYAMLConfig
+	_ = yaml.Unmarshal(raw, &cfg)
+	if cfg.Anthropic.APIKey != "sk-operator" {
+		t.Errorf("an empty platform key still rewrote the file: %+v", cfg.Anthropic)
 	}
 }
 
 func TestLocalAIState_ExplainsWhatLocalAIConfiguredCouldNot(t *testing.T) {
 	dir := t.TempDir()
-	writeAIYAML(t, dir, "ai:\n  provider: \"\"\n  openrouter:\n    api_key: sk-x\n")
+	writeAIYAML(t, dir, "provider: \"\"\nopenrouter:\n  api_key: sk-x\n")
 	b := newTestBridge(t, dir)
 
 	st := b.LocalAIState()
