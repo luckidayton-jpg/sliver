@@ -20,7 +20,11 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"strings"
+	"syscall"
 
 	"github.com/bishopfox/sliver/client/constants"
 	"github.com/bishopfox/sliver/protobuf/clientpb"
@@ -273,35 +277,60 @@ func (rpc *Server) StartHTTPListener(ctx context.Context, req *clientpb.HTTPList
 	return &clientpb.ListenerJob{JobID: uint32(job.ID)}, nil
 }
 
+// PortInUse reports whether a listener port cannot be taken.
+//
+// It asks the operating system rather than the database. It used to walk the stored
+// listener records, which made a stale record permanently block a port: a record
+// outlives the socket that backed it across a restart, so after one restart the port
+// was "in use" with nothing listening on it, the console listed no listeners, and
+// creating one on that port was refused. The operator is left unable to start the C2
+// at all, with an error naming a port that is free.
+//
+// A socket is the thing that occupies a port. If the bind succeeds, the port is
+// available, and whatever the database believes about a job whose socket is gone is
+// history rather than an occupancy. A live listener still fails the bind and is still
+// correctly refused, so nothing is lost by asking the OS.
+//
+// There is a narrow window between releasing this probe socket and the real listener
+// binding, but the previous check had the same window and more: it was a different
+// question from the one being asked.
 func PortInUse(newPort uint32) error {
-	listenerJobs, err := db.ListenerJobs()
-	if err != nil {
-		return rpcError(err)
+	if newPort == 0 {
+		return status.Error(codes.InvalidArgument, "a port is required")
 	}
-	var port uint32
-	for _, job := range listenerJobs {
-		listener, err := db.ListenerByJobID(job.JobID)
+	// Both a wildcard and a loopback address are probed, because they are not
+	// equivalent: on Linux and macOS, binding :P succeeds while something already holds
+	// 127.0.0.1:P. A wildcard-only probe therefore reports a loopback-bound listener as
+	// free, and two listeners end up fighting for the port -- which is the exact
+	// outcome this function exists to prevent.
+	//
+	// Order matters only for which address names the error, so wildcard first: that is
+	// the address a listener is normally bound to.
+	for _, addr := range []string{fmt.Sprintf(":%d", newPort), fmt.Sprintf("127.0.0.1:%d", newPort)} {
+		probe, err := net.Listen("tcp", addr)
 		if err != nil {
+			if isAddrInUse(err) {
+				return status.Error(codes.AlreadyExists, fmt.Sprintf("port %d is in use", newPort))
+			}
 			return rpcError(err)
 		}
-		switch job.Type {
-		case "http":
-			port = listener.HTTPConf.Port
-		case "https":
-			port = listener.HTTPConf.Port
-		case "mtls":
-			port = listener.MTLSConf.Port
-		case "dns":
-			port = listener.DNSConf.Port
-		case "wg":
-			port = listener.WGConf.Port
-		case "multiplayer":
-			port = listener.MultiConf.Port
-		}
-
-		if port == newPort {
-			return status.Error(codes.AlreadyExists, fmt.Sprintf("port %d is in use", port))
-		}
+		// The port is free on this address. Give it straight back before the next.
+		_ = probe.Close()
 	}
 	return nil
+}
+
+// isAddrInUse distinguishes "something is listening here" from every other reason a
+// listen can fail, so a permission problem is reported as a permission problem rather
+// than as a port conflict.
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return errors.Is(opErr.Err, syscall.EADDRINUSE)
+	}
+	// Fall back to the text for platforms whose error wrapping differs.
+	return strings.Contains(strings.ToLower(err.Error()), "address already in use")
 }
